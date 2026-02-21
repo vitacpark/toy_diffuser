@@ -221,6 +221,9 @@ p_{\text{guided}}(\tau_0)\neq \tilde p(\tau_0)
 \]
 를 generator-matching 관점에서 강하게 시사합니다.
 
+> 참고: `guidance.scale`이 큰 경우, tilted(SNIS) 계산은 `exp(scale * R)` 가중치 집중으로 유효 샘플 수가 급감할 수 있습니다.  
+> 이때 base particle 수가 충분하지 않으면 tilted 추정 점수가 실제 목표 대비 낮게/불안정하게 나올 수 있습니다.
+
 ---
 
 ## Practical Tips

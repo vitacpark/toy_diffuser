@@ -226,6 +226,7 @@ def main():
         f_list=cfg.eval.f_list,
         bootstrap_reps=cfg.eval.bootstrap_reps,
         seed=cfg.eval.seed + 1234,
+        reward_scale=float(guidance_scale),
     )
     results_nonguided = run_eval(
         reward=reward,
@@ -234,7 +235,18 @@ def main():
         f_list=cfg.eval.f_list,
         bootstrap_reps=cfg.eval.bootstrap_reps,
         seed=cfg.eval.seed + 2345,
+        reward_scale=float(guidance_scale),
     )
+
+    snis_diag = results_guided["meta"].get("snis_diagnostics", {})
+    if snis_diag:
+        console.log(
+            "SNIS diagnostics | "
+            f"ESS={snis_diag.get('ess', float('nan')):.3f}/{int(snis_diag.get('n_base', 0))} "
+            f"({snis_diag.get('ess_ratio', float('nan')):.6f}) | "
+            f"max_w={snis_diag.get('max_weight', float('nan')):.6f} | "
+            f"top10_mass={snis_diag.get('top10_weight_mass', float('nan')):.6f}"
+        )
 
     # Print table (three-way)
     table = Table(title="Tilted vs Non-guided vs Guided")
@@ -275,6 +287,10 @@ def main():
             "tilted_minus_nonguided_se": float(d_ng["approx_se"]),
             "tilted_minus_guided": float(d_g["mean"]),
             "tilted_minus_guided_se": float(d_g["approx_se"]),
+            "snis_ess": float(snis_diag.get("ess", float("nan"))),
+            "snis_ess_ratio": float(snis_diag.get("ess_ratio", float("nan"))),
+            "snis_max_weight": float(snis_diag.get("max_weight", float("nan"))),
+            "snis_top10_mass": float(snis_diag.get("top10_weight_mass", float("nan"))),
         })
 
     console.print(table)
