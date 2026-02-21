@@ -1,0 +1,38 @@
+name: toy_diffuser_simple
+channels:
+  - pytorch
+  - nvidia
+  - conda-forge
+channel_priority: strict
+dependencies:
+  - python=3.11
+  - pip
+
+  # Core numerics
+  - numpy
+  - scipy
+
+  # Experiment / config
+  - hydra-core
+  - omegaconf
+  - pyyaml
+
+  # Logging / progress
+  - rich
+  - tqdm
+
+  # Plotting (필요 없으면 지워도 됨)
+  - matplotlib
+
+  # PyTorch (CUDA)
+  - pytorch
+  - torchvision
+  - torchaudio
+  - pytorch-cuda=12.1
+
+  # (선택) 편의 패키지
+  - ipython
+
+  # pip-only packages (필요 시 추가)
+  - pip:
+      - einops

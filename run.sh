@@ -1,0 +1,9 @@
+CUDA_VISIBLE_DEVICES=0 python scripts/run_eval.py \
+    eval.device=cuda \
+    reward.goal_x=5.0 \
+    reward.goal_y=5.0 \
+    reward.w_pos=7 \
+    reward.w_neg=2 \
+    reward.state_var=1 \
+    guidance.scale=10 \
+    traj.horizon_T=50 
