@@ -33,6 +33,8 @@ class RewardSpec:
     # Optional goal position. If None, defaults to (base_action_mean*T, base_action_mean*T) in run scripts.
     goal_x: Optional[float] = None
     goal_y: Optional[float] = None
+    # Optional full goal vector. If set, this takes precedence over goal_x/goal_y.
+    goal: Optional[List[float]] = None
 
 
 @dataclass
@@ -55,14 +57,35 @@ class EvalSpec:
     seed: int = 0
     device: str = "auto"
     # Sample sizes
-    n_base: int = 500_000
-    n_guided: int = 200_000
+    n_base: int = 50_000
+    n_guided: int = 20_000
     # Bootstrap (resampling of already-computed f, logw), cheap and stable.
     bootstrap_reps: int = 200
     # Batch size for diffusion sampling
-    batch_size: int = 1024
+    batch_size: int = 131_072
     # Which statistics to report
     f_list: List[str] = field(default_factory=lambda: ["final_x", "final_y", "pos_indicator", "R"])
+    # Models to run in multi-model evaluation.
+    models: List[str] = field(default_factory=list)
+
+
+@dataclass
+class TDPSpec:
+    # Number of parent particles (B)
+    n_roots: int = 64
+    # Fixed fraction of diffusion steps to re-noise (0~1).
+    renoise_frac: float = 0.15
+    # Number of elites to return per TDP rollout.
+    topk_final: int = 1
+
+
+@dataclass
+class OutputSpec:
+    root: str = "outputs"
+    timezone: str = "Asia/Seoul"
+    save_base_max: int = 50_000
+    save_chain_max: int = 20_000
+    save_plots_max_points: int = 50_000
 
 
 @dataclass
@@ -72,3 +95,5 @@ class ToyConfig:
     diffusion: DiffusionSpec = field(default_factory=DiffusionSpec)
     guidance: GuidanceSpec = field(default_factory=GuidanceSpec)
     eval: EvalSpec = field(default_factory=EvalSpec)
+    tdp: TDPSpec = field(default_factory=TDPSpec)
+    output: OutputSpec = field(default_factory=OutputSpec)
