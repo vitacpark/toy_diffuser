@@ -7,10 +7,9 @@ Closed-form diffusion toy planner 실험 저장소입니다.
 
 ```text
 scripts/
-  run_model.py           # 단일 모델 실행 + 통계 비교 저장
   run_eval.py            # 다중 모델 일괄 실행
-  run_eval_matched.py    # 모델별 후보수(K) 맞춘 비교 실행
-  visualize.py           # 샘플 분포/trajectory 시각화
+  visualize_tdp_denoise.py
+                       # TDP parent/child denoising 경로 애니메이션 생성
 
 src/
   config/spec.py         # 전체 설정 스키마(dataclass)
@@ -43,17 +42,6 @@ conda activate toy_diffuser
 
 ## 3. Run
 
-### 단일 모델
-```bash
-python scripts/run_model.py model.name=guided eval.device=cpu
-python scripts/run_model.py model.name=driftlite eval.device=cpu
-```
-
-출력:
-- `outputs/run_model/YYYY-MM-DD/HH-MM-SS/config.yaml`
-- `outputs/run_model/YYYY-MM-DD/HH-MM-SS/results.json`
-- (옵션) `outputs/run_model/.../data/driftlite_diagnostics.npz`
-
 ### 다중 모델 평가
 ```bash
 python scripts/run_eval.py eval.device=cpu
@@ -71,9 +59,20 @@ python scripts/run_eval.py eval.device=cpu eval.models='[non-guided,guided,tdp,d
 
 ### 시각화
 ```bash
-python scripts/visualize.py eval.device=cpu
-python scripts/visualize.py eval.device=cpu viz.models='[guided,driftlite]' viz.path_model=driftlite viz.n_traj=10
+CUDA_VISIBLE_DEVICES=0 python scripts/visualize_tdp_denoise.py \
+  eval.device=cuda \
+  diffusion.n_steps=128 \
+  traj.horizon_T=50 traj.pi_pos=0.01 \
+  reward.goal_x=4.9 reward.goal_y=5.1 reward.w_pos=9 reward.w_neg=1 reward.offset=0 reward.state_var=1 \
+  guidance.scale=8 guidance.clip_norm=null \
+  tdp.n_roots=10 \
+  viz_tdp.n_rollouts=1 \
+  viz_tdp.max_frames=0 \
+  viz_tdp.fps=12 \
+  viz_tdp.format=gif \
+  eval.seed=107 tdp.renoise_frac=0.3 tdp.pg_scale=150 tdp.pg=False
 ```
+위 예시에서 `tdp.pg=False`를 `tdp.pg=True`로 바꿔 실행하면, PG on/off에 따른 denoising 경로 차이를 비교할 수 있습니다.
 
 ## 4. Models
 
@@ -155,11 +154,14 @@ python scripts/visualize.py eval.device=cpu viz.models='[guided,driftlite]' viz.
 - `output.save_diagnostics=false`: diagnostics 파일 저장 on/off
 
 실행 표시:
-- `run_model.py`, `run_eval.py`, `visualize.py`는 공통 배치 루프에서 `tqdm` 진행바만 표시합니다.
+- `run_eval.py`는 배치 루프에서 `tqdm` 진행바를 표시합니다.
 - `run_eval.py`는 결과 표 아래에 모델별 `Sampling Time by Model` 표를 함께 출력합니다.
-
-### visualize.*
-- `viz.n_samples=200` (기본): 시각화용 샘플 수. `eval.n_guided`와 분리되어 있어 시각화가 과도하게 느려지지 않도록 함.
+### viz_tdp.*
+- `viz_tdp.n_rollouts=1`
+- `viz_tdp.max_frames=120` (`0`이면 전체 프레임 사용)
+- `viz_tdp.fps=12`
+- `viz_tdp.format='gif'` (`gif|mp4`)
+- `viz_tdp.filename='tdp_denoise'`
 
 ## 6. DriftLite Diagnostics
 
@@ -188,10 +190,11 @@ python scripts/run_eval.py \
   eval.models='[non-guided,guided,tdp,driftlite]' \
   eval.n_base=256 eval.n_guided=64 eval.bootstrap_reps=5 diffusion.n_steps=16
 
-# DriftLite만 상세 실행
-python scripts/run_model.py \
-  model.name=driftlite \
-  eval.device=cpu eval.n_base=512 eval.n_guided=128 diffusion.n_steps=32 \
-  driftlite.n_particles=256 driftlite.resample=true driftlite.reward_path=linear \
-  output.save_diagnostics=true
+# TDP denoising 영상 (PG off)
+CUDA_VISIBLE_DEVICES=0 python scripts/visualize_tdp_denoise.py \
+  eval.device=cuda diffusion.n_steps=128 traj.horizon_T=50 traj.pi_pos=0.01 \
+  reward.goal_x=4.9 reward.goal_y=5.1 reward.w_pos=9 reward.w_neg=1 reward.offset=0 reward.state_var=1 \
+  guidance.scale=8 guidance.clip_norm=null tdp.n_roots=10 \
+  viz_tdp.n_rollouts=1 viz_tdp.max_frames=0 viz_tdp.fps=12 viz_tdp.format=gif \
+  eval.seed=107 tdp.renoise_frac=0.3 tdp.pg_scale=150 tdp.pg=False
 ```
