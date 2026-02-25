@@ -1,165 +1,197 @@
 # Toy Diffuser Simple
 
-Closed-form diffusion toy 실험 코드입니다. 
-세 가지 샘플러(`non-guided`, `guided`, `tdp`)를 같은 보상 함수에서 비교하고, 
-SNIS로 추정한 tilted target과 통계적으로 얼마나 가까운지 평가합니다.
+Closed-form diffusion toy planner 실험 저장소입니다.  
+동일한 reward에서 `non-guided`, `guided`, `tdp`, `driftlite`를 비교하고, SNIS tilted estimate와의 차이를 평가합니다.
 
-## 무엇을 할 수 있나
-1. 단일 모델 성능 비교 (`run_model.py`)
-2. 여러 모델 일괄 비교 (`run_eval.py`)
-3. 샘플 분포/경로 시각화 (`visualize.py`)
+## 1. Project Structure
 
-## 빠른 시작
+```text
+scripts/
+  run_model.py           # 단일 모델 실행 + 통계 비교 저장
+  run_eval.py            # 다중 모델 일괄 실행
+  run_eval_matched.py    # 모델별 후보수(K) 맞춘 비교 실행
+  visualize.py           # 샘플 분포/trajectory 시각화
+
+src/
+  config/spec.py         # 전체 설정 스키마(dataclass)
+  models/
+    gmm.py               # base isotropic GMM
+    diffusion.py         # reverse diffusion sampler (guided/non-guided)
+    tdp.py               # TDP sampler
+    driftlitelite.py     # DriftLite sampler (SMC + control drift)
+  planners/base.py       # sampler 공통 planner adapter
+  pipelines/
+    experiment_runtime.py# 모델 팩토리/런타임 구성
+    run_eval_pipeline.py # 평가 파이프라인 + 결과 저장
+  evaluation/moment_eval.py
+                         # tilted SNIS vs model mean 비교
+  tasks/reward.py        # toy reward 정의
+```
+
+### 실행 흐름
+1. `experiment_runtime.build_runtime()`이 공통 구성요소(GMM, reward, schedule)와 모델 planner를 만든다.
+2. 평가 파이프라인이 모델별 `sample()` 시간을 측정하며 샘플을 생성한다.
+3. `moment_eval.run_eval()`이 tilted SNIS와 모델 샘플 통계를 비교한다.
+4. 파이프라인이 `results.json`, `summary.csv`, `timing_summary.csv`, `npz`, `plots`를 저장한다.
+
+## 2. Setup
 
 ```bash
 conda env create -f environment.yml
 conda activate toy_diffuser
 ```
 
-## 실행 파일
+## 3. Run
 
-### `scripts/run_model.py`
-모델 하나만 실행하고 tilted target과 비교합니다.
-
+### 단일 모델
 ```bash
-python scripts/run_model.py eval.device=cpu
-python scripts/run_model.py model.name=tdp eval.device=cpu
+python scripts/run_model.py model.name=guided eval.device=cpu
+python scripts/run_model.py model.name=driftlite eval.device=cpu
 ```
 
-기본값
-- `model.name=guided`
+출력:
+- `outputs/run_model/YYYY-MM-DD/HH-MM-SS/config.yaml`
+- `outputs/run_model/YYYY-MM-DD/HH-MM-SS/results.json`
+- (옵션) `outputs/run_model/.../data/driftlite_diagnostics.npz`
 
-출력
-- `outputs/run_model/YYYY-MM-DD/HH-MM-SS/`
-- 파일: `config.yaml`, `results.json`
-
-### `scripts/run_eval.py`
-모델 목록을 한 번에 실행합니다.
-
+### 다중 모델 평가
 ```bash
 python scripts/run_eval.py eval.device=cpu
-python scripts/run_eval.py eval.device=cpu eval.models='[non-guided,guided,tdp]'
+python scripts/run_eval.py eval.device=cpu eval.models='[non-guided,guided,tdp,driftlite]'
 ```
 
-기본값
-- `eval.models`: 등록된 모든 모델 (`non-guided`, `guided`, `tdp`)
+출력:
+- `outputs/run_eval/.../config.yaml`
+- `outputs/run_eval/.../results.json`
+- `outputs/run_eval/.../data/summary.csv`
+- `outputs/run_eval/.../data/timing_summary.csv` (모델별 샘플링 시간 요약)
+- `outputs/run_eval/.../data/derived_saved_subsets.npz`
+- (옵션) `outputs/run_eval/.../data/driftlite_diagnostics.npz`
+- `outputs/run_eval/.../plots/*.png`
 
-출력
-- `outputs/run_eval/YYYY-MM-DD/HH-MM-SS/`
-- 파일: `config.yaml`, `results.json`, `data/summary.csv`, `data/derived_saved_subsets.npz`, `plots/*.png`
-
-### `scripts/visualize.py`
-모델 샘플을 시각화합니다.
-
+### 시각화
 ```bash
 python scripts/visualize.py eval.device=cpu
-python scripts/visualize.py eval.device=cpu viz.models='[guided,tdp]' viz.path_model=tdp viz.n_traj=12
+python scripts/visualize.py eval.device=cpu viz.models='[guided,driftlite]' viz.path_model=driftlite viz.n_traj=10
 ```
 
-기본값
-- `viz.models`: 등록된 모든 모델
-- `viz.path_model=guided`
-- `viz.n_traj=5`
+## 4. Models
 
-출력
-- `outputs/visualize/YYYY-MM-DD/HH-MM-SS/`
-- 파일: `config.yaml`, `plots/final_states_scatter.png`, `plots/reward_hist.png`, `plots/traj_paths.png`
+- `non-guided`: pure reverse diffusion
+- `guided`: reward gradient guidance
+- `tdp`: parent-child mutate-select (always guided variant)
+- `driftlite`: SMC + ESS resampling + VCG-style control drift
 
-## 옵션(의미 + 기본값)
+## 5. Key Configuration (default)
 
-### Trajectory (`traj.*`)
-| 옵션 | 기본값 | 의미 | 언제 바꾸나 |
-|---|---:|---|---|
-| `traj.horizon_T` | `32` | trajectory 길이 T | 더 긴 horizon 실험 |
-| `traj.action_dim` | `2` | action/state 차원 | 차원 민감도 실험 |
-| `traj.base_action_mean` | `0.1` | base GMM 평균 크기 | 난이도/모드 분리 조절 |
-| `traj.sigma0_sq` | `0.025` | base 분산(등방) | base 다양성 조절 |
-| `traj.pi_pos` | `0.5` | positive mixture 비율 | 불균형 mixture 실험 |
+### traj.*
+- `traj.horizon_T=32`: trajectory length
+- `traj.action_dim=2`: action/state dimension
+- `traj.base_action_mean=0.1`: base component mean magnitude
+- `traj.sigma0_sq=0.025`: base isotropic variance
+- `traj.pi_pos=0.5`: mixture ratio for positive mode
 
-### Reward (`reward.*`)
-| 옵션 | 기본값 | 의미 | 언제 바꾸나 |
-|---|---:|---|---|
-| `reward.w_neg` | `0.2` | negative goal 가중치 | 반대 goal 페널티 조절 |
-| `reward.w_pos` | `0.7` | positive goal 가중치 | 목표 집중도 조절 |
-| `reward.offset` | `0.1` | 보상 상수항 | 보상 baseline 조정 |
-| `reward.state_var` | `0.25` | 상태 가우시안 분산 | goal 주변 폭 조절 |
-| `reward.goal_x` | `None` | goal x 좌표(2D 편의) | 목표 위치 수동 지정 |
-| `reward.goal_y` | `None` | goal y 좌표(2D 편의) | 목표 위치 수동 지정 |
-| `reward.goal` | `None` | goal 벡터(차원 일반화) | 2D 외 차원에서 goal 지정 |
+### reward.*
+- `reward.w_neg=0.2`
+- `reward.w_pos=0.7`
+- `reward.offset=0.1`
+- `reward.state_var=0.25`
+- `reward.goal=None` (if set, overrides `goal_x/goal_y`)
+- `reward.goal_x=None`, `reward.goal_y=None`
 
-`reward.goal`이 주어지면 `goal_x/y`보다 우선합니다. 둘 다 없으면 내부 기본 goal을 사용합니다.
+### diffusion.*
+- `diffusion.n_steps=256`
+- `diffusion.beta_start=1e-4`
+- `diffusion.beta_end=2e-2`
 
-### Diffusion (`diffusion.*`)
-| 옵션 | 기본값 | 의미 | 언제 바꾸나 |
-|---|---:|---|---|
-| `diffusion.n_steps` | `256` | diffusion step 수 | 정확도/시간 trade-off |
-| `diffusion.beta_start` | `1e-4` | beta 시작값 | 노이즈 스케줄 실험 |
-| `diffusion.beta_end` | `2e-2` | beta 종료값 | 노이즈 스케줄 실험 |
+### guidance.*
+- `guidance.enabled=true`
+- `guidance.scale=10.0`
+- `guidance.clip_norm=1.0`
 
-### Guidance (`guidance.*`)
-| 옵션 | 기본값 | 의미 | 언제 바꾸나 |
-|---|---:|---|---|
-| `guidance.enabled` | `true` | guidance on/off | guided vs pure reverse 비교 |
-| `guidance.scale` | `10.0` | guidance 강도 | 성능/편향 강도 조절 |
-| `guidance.clip_norm` | `1.0` | gradient clip norm | 큰 gradient 안정화 |
+### reverse.*
+- `reverse.n_candidates=1`: `non-guided/guided`에서 rollout당 후보 샘플 개수
 
-### Evaluation (`eval.*`)
-| 옵션 | 기본값 | 의미 | 언제 바꾸나 |
-|---|---:|---|---|
-| `eval.seed` | `0` | 랜덤 시드 | 재현성 |
-| `eval.device` | `auto` | 실행 디바이스 | CPU/GPU 강제 선택 |
-| `eval.n_base` | `50000` | SNIS base 샘플 수 | tilted 추정 안정화 |
-| `eval.n_guided` | `20000` | 모델 샘플 수 | 통계 오차 감소 |
-| `eval.bootstrap_reps` | `200` | 부트스트랩 반복 수 | SE 추정 안정화 |
-| `eval.batch_size` | `131072` | 샘플링 배치 크기 | 메모리/속도 조절 |
-| `eval.f_list` | `['final_x','final_y','pos_indicator','R']` | 비교 지표 목록 | 원하는 지표만 평가 |
-| `eval.models` | `[]` | 실행 모델 목록 | `run_eval.py`에서 모델 subset 실행 |
+### eval.*
+- `eval.seed=0`
+- `eval.device=auto`
+- `eval.n_base=50000`
+- `eval.n_guided=20000`
+- `eval.bootstrap_reps=200`
+- `eval.batch_size=131072`
+- `eval.f_list=['final_x','final_y','pos_indicator','R']`
+- `eval.models=[]` (empty면 등록된 전체 모델 실행)
 
-`eval.models=[]`이면 등록된 모든 모델을 실행합니다.
+### tdp.*
+- `tdp.n_roots=64`
+- `tdp.renoise_frac=0.15`
 
-### TDP (`tdp.*`)
-| 옵션 | 기본값 | 의미 | 언제 바꾸나 |
-|---|---:|---|---|
-| `tdp.n_roots` | `64` | parent 수 B | 탐색 폭 조절 |
-| `tdp.renoise_frac` | `0.15` | 재노이즈 step 비율(0~1) | 변형 강도 고정 조절 |
-| `tdp.topk_final` | `1` | rollout당 반환 elite 개수 | 다양성/선택 폭 조절 |
+### driftlite.*
+- `driftlite.n_particles=512`: particle count
+- `driftlite.rollout_batch=0`: 동시 rollout 개수 (`<=0`이면 `eval.batch_size // n_particles`로 자동 계산)
+- `driftlite.ess_threshold_ratio=0.5`: ESS resample threshold ratio
+- `driftlite.resample=true`: ESS 기반 systematic resampling 사용
+- `driftlite.dt_mode='auto'`: `auto|fixed`
+- `driftlite.dt=0.0`: `dt_mode=fixed`일 때만 사용
+- `driftlite.ctrl_scale=1.0`: control drift 강도
+- `driftlite.basis=['grad_r','score']`: control basis (`x` 추가 가능)
+- `driftlite.proxy_gamma=1.0`: proxy score 계수
+- `driftlite.divergence_mode='grad_r_hutch'`: `none|grad_r_hutch|all_hutch`
+- `driftlite.hutch_samples=1`: Hutchinson trace 샘플 수
+- `driftlite.reward_path='constant'`: `constant|linear`
+- `driftlite.reward_scale=1.0`: reward scaling
+- `driftlite.reg_lambda=1e-4`: VCG linear solve regularizer
+- `driftlite.output_mode='best'`: `best|resampled|weighted`
+  - `best`: 각 rollout에서 `n_particles` 경쟁 후 top-1 채택, 이를 `eval.n_guided`개 반복
+- `driftlite.save_diagnostics=false`: drift diagnostics 수집 on/off
+- `driftlite.seed_offset=3000`: `eval.seed + seed_offset`로 drift sampler seed 생성
 
-### Output (`output.*`)
-| 옵션 | 기본값 | 의미 | 언제 바꾸나 |
-|---|---:|---|---|
-| `output.root` | `outputs` | 결과 저장 루트 | 저장 경로 변경 |
-| `output.timezone` | `Asia/Seoul` | 타임스탬프 시간대 | 팀 표준 시간대 맞춤 |
-| `output.save_base_max` | `50000` | 저장할 base 최대 개수 | 용량 절감 |
-| `output.save_chain_max` | `20000` | 모델별 저장 최대 개수 | 용량 절감 |
-| `output.save_plots_max_points` | `50000` | 플롯 최대 포인트 수 | 렌더링/용량 절감 |
+### output.*
+- `output.root='outputs'`
+- `output.timezone='Asia/Seoul'`
+- `output.save_base_max=50000`
+- `output.save_chain_max=20000`
+- `output.save_plots_max_points=50000`
+- `output.save_diagnostics=false`: diagnostics 파일 저장 on/off
 
-## 현재 TDP 동작
+실행 표시:
+- `run_model.py`, `run_eval.py`, `visualize.py`는 공통 배치 루프에서 `tqdm` 진행바만 표시합니다.
+- `run_eval.py`는 결과 표 아래에 모델별 `Sampling Time by Model` 표를 함께 출력합니다.
 
-현재 `tdp`는 아래 절차로 동작합니다.
-1. parent `B`개 생성
-2. parent마다 `u ~ Uniform[0, horizon_T)` timestep index를 뽑아 해당 timestep action block extract
-3. `tdp.renoise_frac` 비율(step)로 재노이즈
-4. 디노이징 중 매 step extract timestep block overwrite
-5. parent+child(`2B`) 중 reward 상위 `topk_final` 선택
+### visualize.*
+- `viz.n_samples=200` (기본): 시각화용 샘플 수. `eval.n_guided`와 분리되어 있어 시각화가 과도하게 느려지지 않도록 함.
 
-`tdp`는 항상 guided 모드로 실행됩니다(별도 on/off 옵션 없음).
+## 6. DriftLite Diagnostics
 
-구현 파일: `src/models/tdp.py`
+`driftlite` 실행 시 diagnostics 수집은 기본 off입니다.
 
-## 자주 쓰는 커맨드
+수집/저장 활성화:
+- `driftlite.save_diagnostics=true` 또는 `output.save_diagnostics=true`
+
+저장 항목:
+- `ess_trace`
+- `resample_steps`
+- `theta_trace_norm`
+- `logw_mean_trace`, `logw_std_trace`, `logw_min_trace`, `logw_max_trace`
+- `final_ess`, `resample_count`
+
+저장 위치:
+- `results.json` 내 `driftlite_diagnostics` (요약 직렬화)
+- `data/driftlite_diagnostics.npz` (배열 원본)
+
+## 7. Practical Commands
 
 ```bash
-# 빠른 스모크 테스트
-python scripts/run_eval.py eval.device=cpu eval.n_base=200 eval.n_guided=80 eval.bootstrap_reps=10 diffusion.n_steps=16
+# 빠른 smoke test
+python scripts/run_eval.py \
+  eval.device=cpu \
+  eval.models='[non-guided,guided,tdp,driftlite]' \
+  eval.n_base=256 eval.n_guided=64 eval.bootstrap_reps=5 diffusion.n_steps=16
 
-# TDP만 비교
-python scripts/run_eval.py eval.device=cpu eval.models='[tdp]' tdp.n_roots=64
-
-# 고정밀 평가(시간 오래 걸림)
-python scripts/run_eval.py eval.device=cuda eval.n_base=200000 eval.n_guided=80000 eval.bootstrap_reps=300
+# DriftLite만 상세 실행
+python scripts/run_model.py \
+  model.name=driftlite \
+  eval.device=cpu eval.n_base=512 eval.n_guided=128 diffusion.n_steps=32 \
+  driftlite.n_particles=256 driftlite.resample=true driftlite.reward_path=linear \
+  output.save_diagnostics=true
 ```
-
-## 참고
-
-- 시각화(`scatter`, `traj_paths`)는 현재 2D 축 표시를 가정합니다.
-- CPU 환경에서도 PyTorch CUDA probe 경고가 보일 수 있으나, 보통 실행에는 영향이 없습니다.

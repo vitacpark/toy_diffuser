@@ -228,7 +228,13 @@ def _factory_nonguided(name: str, params: Mapping[str, Any], shared: SharedRunti
         guidance_scale=float(params.get("guidance_scale", shared.guidance_scale)),
         clip_norm=params.get("clip_norm", shared.clip_norm),
     )
-    return ReverseDiffusionPlanner(name=name, sampler=sampler, guided=False)
+    return ReverseDiffusionPlanner(
+        name=name,
+        sampler=sampler,
+        guided=False,
+        reward_fn=shared.reward_fn,
+        n_candidates=int(params.get("n_candidates", cfg.reverse.n_candidates)),
+    )
 
 
 def _factory_guided(name: str, params: Mapping[str, Any], shared: SharedRuntime, cfg: DictConfig) -> Planner:
@@ -239,13 +245,20 @@ def _factory_guided(name: str, params: Mapping[str, Any], shared: SharedRuntime,
         guidance_scale=float(params.get("guidance_scale", shared.guidance_scale)),
         clip_norm=params.get("clip_norm", shared.clip_norm),
     )
-    return ReverseDiffusionPlanner(name=name, sampler=sampler, guided=True)
+    return ReverseDiffusionPlanner(
+        name=name,
+        sampler=sampler,
+        guided=True,
+        reward_fn=shared.reward_fn,
+        n_candidates=int(params.get("n_candidates", cfg.reverse.n_candidates)),
+    )
 
 
 def _factory_tdp(name: str, params: Mapping[str, Any], shared: SharedRuntime, cfg: DictConfig) -> Planner:
     n_roots = int(params.get("n_roots", cfg.tdp.n_roots))
-    topk_final = int(params.get("topk_final", cfg.tdp.topk_final))
     renoise_frac = float(params.get("renoise_frac", cfg.tdp.renoise_frac))
+    pg = bool(params.get("pg", cfg.tdp.pg))
+    pg_scale = float(params.get("pg_scale", cfg.tdp.pg_scale))
 
     tdp = ClosedFormTDP(
         gmm=shared.gmm,
@@ -254,13 +267,13 @@ def _factory_tdp(name: str, params: Mapping[str, Any], shared: SharedRuntime, cf
         horizon_T=int(cfg.traj.horizon_T),
         action_dim=int(cfg.traj.action_dim),
         renoise_frac=renoise_frac,
+        pg=pg,
+        pg_scale=pg_scale,
     )
     return TDPPlanner(
         name=name,
         tdp=tdp,
         n_roots=n_roots,
-        topk_final=topk_final,
-        guided=True,
     )
 
 

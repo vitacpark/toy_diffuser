@@ -15,26 +15,28 @@ if PROJECT_ROOT not in sys.path:
     sys.path.insert(0, PROJECT_ROOT)
 
 from src.pipelines.experiment_runtime import (
+    MODEL_FACTORIES,
     build_runtime,
-    default_model_name,
     load_cfg,
     make_outdir,
     parse_model_list,
-    sample_model,
-    supported_models,
 )
+from src.pipelines.run_eval_pipeline import sample_model_batched_with_timing
 
 console = Console()
 
 
 def main():
-    default_models = supported_models()
-    default_path_model = default_model_name()
+    default_models = list(MODEL_FACTORIES.keys())
+    if not default_models:
+        raise ValueError("No registered models available")
+    default_path_model = "guided" if "guided" in MODEL_FACTORIES else default_models[0]
     cfg = load_cfg(
         sys.argv[1:],
         extra_defaults={
             "viz": {
                 "n_traj": 5,
+                "n_samples": 200,
                 "models": default_models,
                 "path_model": default_path_model,
             }
@@ -59,7 +61,7 @@ def main():
 
     runtime = build_runtime(cfg, models=model_specs)
 
-    n = int(cfg.eval.n_guided)
+    n = int(cfg.viz.n_samples)
     batch_size = int(cfg.eval.batch_size)
 
     console.print(f"[bold]Output:[/bold] {out_dir}")
@@ -69,8 +71,12 @@ def main():
 
     sampled = {}
     for model_name in models:
-        console.log(f"Sampling {model_name}: n={n} ...")
-        tau = sample_model(runtime, model_name=model_name, n=n, batch_size=batch_size)
+        tau, _ = sample_model_batched_with_timing(
+            runtime,
+            model_name=model_name,
+            n=n,
+            batch_size=batch_size,
+        )
         with np.errstate(all="ignore"):
             sampled[model_name] = {
                 "tau": tau,

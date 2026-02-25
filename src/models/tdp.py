@@ -1,7 +1,8 @@
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
-from typing import Callable
+from typing import Callable, Optional
 
 import torch
 
@@ -17,7 +18,7 @@ class ClosedFormTDP:
       2) for each parent, extract one random timestep index u ~ Uniform[0, horizon_T)
       3) re-noise with fixed depth = renoise_frac * total diffusion steps
       4) reverse denoise while overwriting extracted timestep each step
-      5) evaluate 2B candidates (parents + children), keep top-k
+      5) evaluate 2B candidates (parents + children), keep top-1
     """
 
     gmm: IsotropicGMM
@@ -26,6 +27,10 @@ class ClosedFormTDP:
     horizon_T: int = 32
     action_dim: int = 2
     renoise_frac: float = 0.15
+    guidance_scale: float = 10.0
+    clip_norm: Optional[float] = 1.0
+    pg: bool = False
+    pg_scale: float = 1.0
 
     def estimate_transitions(self, n_roots: int) -> int:
         k = max(1, int(round(self.renoise_frac * self.schedule.n_steps)))
@@ -38,16 +43,12 @@ class ClosedFormTDP:
     def sample(
         self,
         n_roots: int,
-        topk_final: int,
-        guided: bool,
         device: torch.device,
         dtype: torch.dtype = torch.float32,
     ) -> torch.Tensor:
         return self.sample_many(
             n_rollouts=1,
             n_roots=n_roots,
-            topk_final=topk_final,
-            guided=guided,
             device=device,
             dtype=dtype,
         )
@@ -56,12 +57,9 @@ class ClosedFormTDP:
         self,
         n_rollouts: int,
         n_roots: int,
-        topk_final: int,
-        guided: bool,
         device: torch.device,
         dtype: torch.dtype = torch.float32,
     ) -> torch.Tensor:
-        _ = guided  # not used in current TDP variant
         if n_rollouts <= 0:
             raise ValueError(f"n_rollouts must be positive, got {n_rollouts}")
         if n_roots <= 0:
@@ -79,15 +77,45 @@ class ClosedFormTDP:
         flat = candidates.reshape(n_rollouts * (2 * n_roots), dim)
         scores = self.reward_fn(flat).detach().view(n_rollouts, 2 * n_roots)
 
-        k = min(max(1, int(topk_final)), 2 * n_roots)
-        keep_idx = torch.topk(scores, k=k, dim=1, largest=True).indices  # [R, k]
-        gather_idx = keep_idx.unsqueeze(-1).expand(n_rollouts, k, dim)
-        chosen = candidates.gather(dim=1, index=gather_idx)  # [R, k, D]
-        return chosen.reshape(n_rollouts * k, dim)
+        keep_idx = torch.topk(scores, k=1, dim=1, largest=True).indices  # [R, 1]
+        gather_idx = keep_idx.unsqueeze(-1).expand(n_rollouts, 1, dim)
+        chosen = candidates.gather(dim=1, index=gather_idx)  # [R, 1, D]
+        return chosen.reshape(n_rollouts, dim)
 
-    def _reverse_step(self, tau_t: torch.Tensor, t_idx: int) -> torch.Tensor:
+    def _reverse_step(self, tau_t: torch.Tensor, t_idx: int, pg: bool = False) -> torch.Tensor:
         beta_t, alpha_t, alpha_bar_t, alpha_bar_prev = self.schedule.scalars(t_idx)
         gamma, mu_k, var = self.gmm.reverse_kernel_params(tau_t, alpha_t, alpha_bar_t, alpha_bar_prev, beta_t)
+
+        if pg and tau_t.shape[0] > 2:
+            # Particle-guidance repulsion term (kernel gradient) adapted from TDP diffusion pg branch.
+            diff = tau_t.unsqueeze(1) - tau_t.unsqueeze(0)  # [B, B, D]
+            eye = torch.eye(diff.shape[0], device=tau_t.device, dtype=torch.bool)
+            diff = diff[~eye].reshape(diff.shape[0], diff.shape[0] - 1, diff.shape[-1])  # [B, B-1, D]
+
+            distance = torch.linalg.vector_norm(diff, ord=2, dim=-1, keepdim=True)  # [B, B-1, 1]
+            denom = max(1e-6, math.log(float(diff.shape[0] - 1)))
+            h_t = (distance.median(dim=1, keepdim=True).values ** 2) / denom
+            h_t = h_t.clamp_min(1e-12)
+            weights = torch.exp(-((distance ** 2) / h_t))
+            pg_grad = (2.0 * weights * diff / h_t) * (var.view(-1, 1, 1) * float(self.pg_scale))
+            pg_grad = pg_grad.sum(dim=1)  # [B, D]
+            mu_k = mu_k + pg_grad.unsqueeze(1)
+
+        if self.guidance_scale != 0.0:
+            with torch.enable_grad():
+                tau_req = tau_t.detach().requires_grad_(True)
+                mu0_hat = self.gmm.posterior_mean_tau0(tau_req, alpha_bar_t)
+                j_val = self.reward_fn(mu0_hat)
+                grad = torch.autograd.grad(j_val.sum(), tau_req, retain_graph=False, create_graph=False)[0]
+
+            if self.clip_norm is not None and self.clip_norm > 0:
+                gnorm = torch.linalg.vector_norm(grad, ord=2, dim=1, keepdim=True).clamp_min(1e-12)
+                scale = (self.clip_norm / gnorm).clamp_max(1.0)
+                grad = grad * scale
+
+            shift = (self.guidance_scale * var) * grad
+            mu_k = mu_k + shift.unsqueeze(1)
+
         bsz, _, dim = mu_k.shape
         k_idx = torch.multinomial(gamma, num_samples=1).squeeze(1)
         gather_idx = k_idx.view(bsz, 1, 1).expand(bsz, 1, dim)
@@ -97,7 +125,7 @@ class ClosedFormTDP:
     def _sample_parents(self, n_roots: int, device: torch.device, dtype: torch.dtype) -> torch.Tensor:
         tau_t = torch.randn(n_roots, self.gmm.D, device=device, dtype=dtype)
         for t_idx in range(self.schedule.n_steps, 0, -1):
-            tau_t = self._reverse_step(tau_t=tau_t, t_idx=t_idx)
+            tau_t = self._reverse_step(tau_t=tau_t, t_idx=t_idx, pg=bool(self.pg))
         return tau_t
 
     def _sample_children_from_parents(self, parents: torch.Tensor, device: torch.device, dtype: torch.dtype) -> torch.Tensor:
@@ -126,7 +154,7 @@ class ClosedFormTDP:
         tau_t = self._forward_noise(parent=parents, t_idx=k, eps_ref=eps_ref)
 
         for t_idx in range(k, 0, -1):
-            tau_t = self._reverse_step(tau_t=tau_t, t_idx=t_idx)
+            tau_t = self._reverse_step(tau_t=tau_t, t_idx=t_idx, pg=False)
             known_prev = self._forward_noise(parent=parents, t_idx=t_idx - 1, eps_ref=eps_ref)
             tau_t = torch.where(mask, known_prev, tau_t)
 

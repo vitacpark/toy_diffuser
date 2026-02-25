@@ -53,16 +53,22 @@ class GuidanceSpec:
 
 
 @dataclass
+class ReverseSelectSpec:
+    # Number of candidates sampled per rollout for non-guided/guided models.
+    n_candidates: int = 1
+
+
+@dataclass
 class EvalSpec:
     seed: int = 0
     device: str = "auto"
     # Sample sizes
     n_base: int = 50_000
-    n_guided: int = 20_000
+    n_guided: int = 50_000
     # Bootstrap (resampling of already-computed f, logw), cheap and stable.
     bootstrap_reps: int = 200
     # Batch size for diffusion sampling
-    batch_size: int = 131_072
+    batch_size: int = 10_000
     # Which statistics to report
     f_list: List[str] = field(default_factory=lambda: ["final_x", "final_y", "pos_indicator", "R"])
     # Models to run in multi-model evaluation.
@@ -72,11 +78,35 @@ class EvalSpec:
 @dataclass
 class TDPSpec:
     # Number of parent particles (B)
-    n_roots: int = 64
+    n_roots: int = 10
     # Fixed fraction of diffusion steps to re-noise (0~1).
     renoise_frac: float = 0.15
-    # Number of elites to return per TDP rollout.
-    topk_final: int = 1
+    # Particle guidance on parent expansion only.
+    pg: bool = True
+    # Strength multiplier for particle-guidance shift.
+    pg_scale: float = 1.0
+
+
+@dataclass
+class DriftLiteSpec:
+    n_particles: int = 512
+    rollout_batch: int = 0  # <=0 means auto from eval.batch_size // n_particles
+    batch_particles: int = 0  # <=0 means auto from min(eval.batch_size, rollout_batch*n_particles)
+    ess_threshold_ratio: float = 0.5
+    resample: bool = True
+    dt_mode: str = "auto"  # auto | fixed
+    dt: float = 0.0
+    ctrl_scale: float = 1.0
+    basis: List[str] = field(default_factory=lambda: ["grad_r", "score"])
+    proxy_gamma: float = 1.0
+    divergence_mode: str = "grad_r_hutch"  # none | grad_r_hutch | all_hutch
+    hutch_samples: int = 1
+    reward_path: str = "constant"  # constant | linear
+    reward_scale: float = 1.0
+    reg_lambda: float = 1e-4
+    output_mode: str = "best"  # best | resampled | weighted
+    save_diagnostics: bool = False
+    seed_offset: int = 3000
 
 
 @dataclass
@@ -86,6 +116,7 @@ class OutputSpec:
     save_base_max: int = 50_000
     save_chain_max: int = 20_000
     save_plots_max_points: int = 50_000
+    save_diagnostics: bool = False
 
 
 @dataclass
@@ -94,6 +125,8 @@ class ToyConfig:
     reward: RewardSpec = field(default_factory=RewardSpec)
     diffusion: DiffusionSpec = field(default_factory=DiffusionSpec)
     guidance: GuidanceSpec = field(default_factory=GuidanceSpec)
+    reverse: ReverseSelectSpec = field(default_factory=ReverseSelectSpec)
     eval: EvalSpec = field(default_factory=EvalSpec)
     tdp: TDPSpec = field(default_factory=TDPSpec)
+    driftlite: DriftLiteSpec = field(default_factory=DriftLiteSpec)
     output: OutputSpec = field(default_factory=OutputSpec)

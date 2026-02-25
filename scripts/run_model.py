@@ -5,6 +5,8 @@ import os
 import sys
 from pathlib import Path
 
+import numpy as np
+import torch
 from omegaconf import OmegaConf
 from rich.console import Console
 from rich.table import Table
@@ -16,20 +18,53 @@ if PROJECT_ROOT not in sys.path:
 
 from src.evaluation.moment_eval import run_eval
 from src.pipelines.experiment_runtime import (
+    MODEL_FACTORIES,
     build_runtime,
-    default_model_name,
     load_cfg,
     make_outdir,
     parse_model_list,
-    sample_model,
-    supported_models,
 )
+from src.pipelines.run_eval_pipeline import sample_model_batched_with_timing
 
 console = Console()
 
 
+def _diag_to_json(diag: dict[str, object]) -> dict[str, object]:
+    out: dict[str, object] = {}
+    for key, val in diag.items():
+        if isinstance(val, torch.Tensor):
+            arr = val.detach().cpu().numpy()
+        elif isinstance(val, np.ndarray):
+            arr = val
+        else:
+            arr = np.asarray(val)
+        if arr.ndim == 0:
+            scalar = arr.item()
+            out[key] = float(scalar) if isinstance(scalar, (np.floating, float)) else int(scalar)
+        else:
+            out[key] = arr.tolist()
+    return out
+
+
+def _save_diag_npz(path: Path, diag: dict[str, object]):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    arrays: dict[str, np.ndarray] = {}
+    for key, val in diag.items():
+        if isinstance(val, torch.Tensor):
+            arrays[key] = val.detach().cpu().numpy()
+        elif isinstance(val, np.ndarray):
+            arrays[key] = val
+        else:
+            arrays[key] = np.asarray(val)
+    np.savez_compressed(path, **arrays)
+
+
 def main():
-    cfg = load_cfg(sys.argv[1:], extra_defaults={"model": {"name": default_model_name()}})
+    model_names = list(MODEL_FACTORIES.keys())
+    if not model_names:
+        raise ValueError("No registered models available")
+    default_name = "guided" if "guided" in MODEL_FACTORIES else model_names[0]
+    cfg = load_cfg(sys.argv[1:], extra_defaults={"model": {"name": default_name}})
     model_name = str(cfg.model.name)
     parse_model_list([model_name])
 
@@ -53,7 +88,14 @@ def main():
     )
 
     base = runtime.gmm.sample_tau0(n_base, device=runtime.device, dtype=runtime.dtype)
-    samples = sample_model(runtime, model_name=model_name, n=n_model, batch_size=batch_size)
+    samples, sample_stats = sample_model_batched_with_timing(
+        runtime,
+        model_name=model_name,
+        n=n_model,
+        batch_size=batch_size,
+    )
+    planner = runtime.runners[model_name]
+    planner_diag = getattr(planner, "last_diagnostics", None)
 
     results = run_eval(
         reward=runtime.reward,
@@ -86,11 +128,25 @@ def main():
     payload = {
         "cfg": OmegaConf.to_container(cfg, resolve=True),
         "model": model_name,
-        "supported_models": supported_models(),
+        "supported_models": model_names,
         "results": results,
+        "sampling_seconds": {
+            model_name: float(sample_stats["seconds_total"]),
+        },
+        "sampling_batch_stats": {
+            model_name: sample_stats,
+        },
     }
+    if isinstance(planner_diag, dict):
+        payload["driftlite_diagnostics"] = _diag_to_json(planner_diag)
     with open(out_dir / "results.json", "w", encoding="utf-8") as f:
         json.dump(payload, f, indent=2, ensure_ascii=False)
+
+    save_diag_file = bool(cfg.output.get("save_diagnostics", False))
+    if save_diag_file and isinstance(planner_diag, dict):
+        diag_path = out_dir / "data" / "driftlite_diagnostics.npz"
+        _save_diag_npz(diag_path, planner_diag)
+        console.log(f"Saved: {diag_path}")
 
     console.log(f"Saved: {out_dir / 'config.yaml'}")
     console.log(f"Saved: {out_dir / 'results.json'}")
