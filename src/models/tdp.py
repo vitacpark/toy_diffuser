@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import math
 from dataclasses import dataclass
-from typing import Callable, Optional
+from typing import Callable, Dict, Optional
 
 import torch
 
@@ -81,6 +81,90 @@ class ClosedFormTDP:
         gather_idx = keep_idx.unsqueeze(-1).expand(n_rollouts, 1, dim)
         chosen = candidates.gather(dim=1, index=gather_idx)  # [R, 1, D]
         return chosen.reshape(n_rollouts, dim)
+
+    def sample_many_with_trace(
+        self,
+        n_rollouts: int,
+        n_roots: int,
+        device: torch.device,
+        dtype: torch.dtype = torch.float32,
+        max_frames: int = 0,
+    ) -> Dict[str, torch.Tensor]:
+        """Debug sampler that records parent/child denoising traces."""
+        if n_rollouts <= 0:
+            raise ValueError(f"n_rollouts must be positive, got {n_rollouts}")
+        if n_roots <= 0:
+            raise ValueError(f"n_roots must be positive, got {n_roots}")
+
+        total_parents = int(n_rollouts) * int(n_roots)
+        dim = self.gmm.D
+
+        parent_trace = []
+        tau_t = torch.randn(total_parents, dim, device=device, dtype=dtype)
+        parent_trace.append(tau_t.detach().clone())  # x_T
+        for t_idx in range(self.schedule.n_steps, 0, -1):
+            tau_t = self._reverse_step(tau_t=tau_t, t_idx=t_idx, pg=bool(self.pg))
+            parent_trace.append(tau_t.detach().clone())  # x_{t-1}
+        parents = tau_t
+
+        if dim != self.horizon_T * self.action_dim:
+            raise ValueError(
+                f"Parent dim mismatch: got {dim}, expected horizon_T*action_dim={self.horizon_T*self.action_dim}"
+            )
+        if not 0.0 <= self.renoise_frac <= 1.0:
+            raise ValueError(f"tdp.renoise_frac must be in [0,1], got {self.renoise_frac}")
+
+        k = max(1, int(round(self.renoise_frac * self.schedule.n_steps)))
+        k = min(k, self.schedule.n_steps)
+
+        u = torch.randint(low=0, high=self.horizon_T, size=(total_parents,), device=device)
+        base = (u * self.action_dim).unsqueeze(1)
+        offsets = torch.arange(self.action_dim, device=device).unsqueeze(0)
+        idx = base + offsets
+
+        mask = torch.zeros(total_parents, dim, dtype=torch.bool, device=device)
+        mask.scatter_(dim=1, index=idx, src=torch.ones_like(idx, dtype=torch.bool, device=device))
+
+        eps_ref = torch.randn_like(parents, dtype=dtype, device=device)
+        tau_t = self._forward_noise(parent=parents, t_idx=k, eps_ref=eps_ref)
+        child_renoise_trace = [tau_t.detach().clone()]  # x_k
+        child_denoise_trace = []
+        for t_idx in range(k, 0, -1):
+            tau_t = self._reverse_step(tau_t=tau_t, t_idx=t_idx, pg=False)
+            known_prev = self._forward_noise(parent=parents, t_idx=t_idx - 1, eps_ref=eps_ref)
+            tau_t = torch.where(mask, known_prev, tau_t)
+            child_denoise_trace.append(tau_t.detach().clone())  # x_{t-1}
+        children = tau_t
+
+        parents_r = parents.view(n_rollouts, n_roots, dim)
+        children_r = children.view(n_rollouts, n_roots, dim)
+        candidates = torch.cat([parents_r, children_r], dim=1)  # [R, 2B, D]
+        flat = candidates.reshape(n_rollouts * (2 * n_roots), dim)
+        scores = self.reward_fn(flat).detach().view(n_rollouts, 2 * n_roots)
+        keep_idx = torch.topk(scores, k=1, dim=1, largest=True).indices
+        gather_idx = keep_idx.unsqueeze(-1).expand(n_rollouts, 1, dim)
+        chosen = candidates.gather(dim=1, index=gather_idx).reshape(n_rollouts, dim)
+
+        def _stack_and_trim(frames):
+            stacked = torch.stack(frames, dim=0)
+            if int(max_frames) > 0 and stacked.shape[0] > int(max_frames):
+                pick = torch.linspace(0, stacked.shape[0] - 1, int(max_frames), device=stacked.device)
+                pick = torch.round(pick).to(torch.long).unique(sorted=True)
+                stacked = stacked.index_select(dim=0, index=pick)
+            return stacked
+
+        out: Dict[str, torch.Tensor] = {
+            "chosen": chosen,
+            "parents_final": parents,
+            "children_final": children,
+            "u": u.detach().clone(),
+            "mask": mask.detach().clone(),
+            "k_renoise": torch.tensor(k, device=device, dtype=torch.int64),
+            "parent_trace": _stack_and_trim(parent_trace),
+            "child_renoise_trace": _stack_and_trim(child_renoise_trace),
+            "child_denoise_trace": _stack_and_trim(child_denoise_trace),
+        }
+        return out
 
     def _reverse_step(self, tau_t: torch.Tensor, t_idx: int, pg: bool = False) -> torch.Tensor:
         beta_t, alpha_t, alpha_bar_t, alpha_bar_prev = self.schedule.scalars(t_idx)
