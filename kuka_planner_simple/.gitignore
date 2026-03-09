@@ -1,0 +1,4 @@
+assets/checkpoints/
+outputs/
+__pycache__/
+*.pyc

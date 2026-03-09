@@ -1,0 +1,7 @@
+task:
+  name: conditional_stack
+  horizon: 128
+  diffusion_steps: 1000
+  diffusion_module: diffusion.denoising_diffusion_pytorch
+  env_variant: default
+  value_rule: stack_distance

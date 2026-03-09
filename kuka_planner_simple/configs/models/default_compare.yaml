@@ -1,0 +1,3 @@
+# Keeps the default comparison on top of task-specific model definitions.
+eval:
+  models: [diffusion, tdp]

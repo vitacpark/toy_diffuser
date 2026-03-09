@@ -1,0 +1,68 @@
+runtime:
+  device: auto
+  seed: 128
+
+task:
+  name: conditional_stack
+  horizon: 128
+  diffusion_steps: 1000
+  diffusion_module: diffusion.denoising_diffusion_pytorch
+  env_variant: default
+  value_rule: default
+
+eval:
+  episodes: 100
+  batch_size: 32
+  save_render: false
+  save_trajectories: true
+  models: [diffusion, tdp]
+
+tdp:
+  sample_ub: 52
+  sample_jump_size: 4
+  diffusion_step: 100
+
+pg:
+  enabled: false
+  scale: null
+  guide_step: 1
+  defaults_by_task:
+    conditional_stack: 0.25
+    pick2put: 0.5
+    pnwp: 0.5
+
+models:
+  - name: diffusion
+    enabled: true
+    planner: diffusion
+    planner_params:
+      selection_mode: direct
+      pg: false
+    diffusion_log_dir: assets/checkpoints/multiple_cube_kuka_temporal_convnew_real2_128
+    diffusion_epoch: 650
+    guide_ckpt: assets/checkpoints/kuka_cube_stack_classifier_new3/value_0.99/state_80.pt
+    guide_arch:
+      time_dim: 128
+      input_dim: 39
+      hidden_dims: [128, 128, 128]
+      output_dim: 12
+
+  - name: tdp
+    enabled: true
+    planner: tdp
+    planner_params:
+      selection_mode: subtree
+      pg: true
+    diffusion_log_dir: assets/checkpoints/multiple_cube_kuka_temporal_convnew_real2_128
+    diffusion_epoch: 650
+    guide_ckpt: assets/checkpoints/kuka_cube_stack_classifier_new3/value_0.99/state_80.pt
+    guide_arch:
+      time_dim: 128
+      input_dim: 39
+      hidden_dims: [128, 128, 128]
+      output_dim: 12
+
+output:
+  root: outputs
+  experiment_name: run_kuka_eval
+  timezone: Asia/Seoul
