@@ -1,0 +1,7 @@
+task:
+  name: pick2put
+  horizon: 128
+  diffusion_steps: 1000
+  diffusion_module: diffusion.denoising_diffusion_pytorch_pnp
+  env_variant: pnp
+  value_rule: put_place_distance

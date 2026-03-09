@@ -1,0 +1,7 @@
+task:
+  name: pnwp
+  horizon: 128
+  diffusion_steps: 1000
+  diffusion_module: diffusion.denoising_diffusion_pytorch_pnwp
+  env_variant: pnwp
+  value_rule: local_mid_global
